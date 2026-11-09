@@ -24,7 +24,8 @@ if __name__=="__main__":
     prefill = config.DATASETS[args.dataset]["prefill"]
     answer_names = ["clean","cluttered"]+config.ANSWER_ROWS[kind]
     score_names = ["clean","cluttered"]+config.SCORE_ROWS[kind]
-    end_id = processor.tokenizer.convert_tokens_to_ids("<|im_end|>")
+    end_id = qwen.end_token(model,processor)
+    family = qwen.family_of(model)
     chunks,total = work.my_chunks(args.dataset,args.worker,args.workers)
     started = time.time()
     done = 0
@@ -42,7 +43,7 @@ if __name__=="__main__":
             prompt = qwen.prompt_text(processor,clean_row["question"],prefill)
             for v,row in enumerate(scene["rows"][1:]):
                 image = data.load_image(args.dataset,row)
-                m = data.masks(clean,image,data.objects_of(row))
+                m = data.masks(clean,image,data.objects_of(row),family)
                 parts = {"object":m["object"],"background":m["background"],"clutter":m["clutter"]}
                 seed = scene["scene_id"]*100+v
                 truth = vqa_scoring.counts_from_row(row)

@@ -3,6 +3,7 @@ MODELS = {
     "qwen4b":{
         "repo":"Qwen/Qwen3-VL-4B-Instruct",
         "revision":"ebb281ec70b05090aa6165b016eac8ec08e71b17",
+        "family":"qwen",
         "device_map":"cuda:0",
         # the 4b model fits on one t4 so each gpu runs its own copy on half the scenes
         "copies":2,
@@ -10,9 +11,21 @@ MODELS = {
     "qwen8b":{
         "repo":"Qwen/Qwen3-VL-8B-Instruct",
         "revision":"0c351dd01ed87e9c1b53cbc748cba10e6187ff3b",
+        "family":"qwen",
         "device_map":"auto",
         "copies":1,
         # the replication runs the main swap rows only because the 8b model is twice as slow on one copy
+        "swap_rows":"short",
+    },
+    # the second replication with a model of another family, pinned to the weights gemma used in study 3
+    "gemma4e4b":{
+        "repo":"google/gemma-4-E4B-it",
+        "revision":"4ecc2ba63bcac23ba4a767fc87025b1450f84c9c",
+        "family":"gemma",
+        # gemma does not fit on one t4 so one copy is split over both gpus
+        "device_map":"auto",
+        "copies":1,
+        # the same main swap rows as the 8b replication
         "swap_rows":"short",
     },
 }
@@ -54,6 +67,13 @@ GRID = IMAGE_SIZE//SQUARE
 TOKENS = GRID*GRID
 PATCHES = 4*TOKENS
 
+# how each family turns one 32 px square of the png into vision patches
+# qwen keeps the 512 px picture and merges a two by two block of 16 px patches into one square
+# gemma reads a 768 px picture and pools a three by three block of 16 px patches into one square
+# so both give the same 16 by 16 grid of squares and only the patches inside a square differ
+PROCESSED_SIZE = {"qwen":512,"gemma":768}
+PATCH_SIDE = {"qwen":2,"gemma":3}
+
 # residual stream points saved for the probes where k means after k decoder layers and 0 is the hand over
 # the vision points are the patch embedding and the blocks at a quarter half three quarters and the end of the vision part
 LLM_NOTE_LAYERS = [3,6,8,12,18,24,30,36]
@@ -93,6 +113,7 @@ CHUNK = 20
 RUNS = {
     "qwen4b":[("notes","objects"),("swap","objects"),("notes","shapes"),("notes","hard"),("swap","shapes"),("swap","hard")],
     "qwen8b":[("notes","objects"),("swap","objects")],
+    "gemma4e4b":[("notes","objects"),("swap","objects")],
 }
 SMOKE_SCENES = 10
 

@@ -1,10 +1,13 @@
 import torch
 
 from tangle import config
+from tangle.model import family_of
 
 
 def parts_of(model):
     """Return the vision part and the language part of the model"""
+    if family_of(model)=="gemma":
+        return model.model.vision_tower,model.model.language_model
     return model.model.visual,model.model.language_model
 
 
@@ -25,6 +28,7 @@ class Recorder:
 
     def __init__(self,model,positions,rows):
         self.model = model
+        self.family = family_of(model)
         self.positions = positions
         self.rows = rows
         # a model split over two gpus leaves later layers on the second one so every note is moved to the first
@@ -36,6 +40,11 @@ class Recorder:
 
     def keep_vision(self,module,args,output):
         """Keep the output of the patch embedding or of one vision block"""
+        if self.family=="gemma":
+            # gemma keeps the padding patches after the real ones so only the real ones are kept
+            n = (config.PROCESSED_SIZE["gemma"]//config.PATCH)**2
+            self.vision.append(output[:,:n].to(self.device,copy=True))
+            return
         self.vision.append(output.reshape(self.rows,config.PATCHES,-1).to(self.device,copy=True))
 
     def keep_handover(self,module,args,output):
@@ -50,10 +59,16 @@ class Recorder:
 
     def __enter__(self):
         visual,language = parts_of(self.model)
-        self.handles.append(visual.patch_embed.register_forward_hook(self.keep_vision))
-        for block in visual.blocks:
-            self.handles.append(block.register_forward_hook(self.keep_vision))
-        self.handles.append(visual.register_forward_hook(self.keep_handover))
+        if self.family=="gemma":
+            # gemma has no deepstack so its hand over is only the projected squares that enter llm layer 0
+            self.handles.append(visual.patch_embedder.register_forward_hook(self.keep_vision))
+            for block in visual.encoder.layers:
+                self.handles.append(block.register_forward_hook(self.keep_vision))
+        else:
+            self.handles.append(visual.patch_embed.register_forward_hook(self.keep_vision))
+            for block in visual.blocks:
+                self.handles.append(block.register_forward_hook(self.keep_vision))
+            self.handles.append(visual.register_forward_hook(self.keep_handover))
         for layer in language.layers:
             self.handles.append(layer.register_forward_pre_hook(self.keep_llm,with_kwargs=True))
         self.handles.append(language.norm.register_forward_pre_hook(self.keep_llm))
@@ -69,6 +84,7 @@ class Surgery:
 
     def __init__(self,model,positions,plans,parts,seed):
         self.model = model
+        self.family = family_of(model)
         self.positions = positions
         self.plans = plans
         self.seed = seed
@@ -98,14 +114,15 @@ class Surgery:
                 rows.append(r)
         return rows
 
-    def mix(self,r,clean,cluttered,layer):
+    def mix(self,r,clean,cluttered,layer,salt=0):
         """Build the notes of one mixed row from the clean and cluttered notes"""
         source = self.sources[r].to(clean.device)
         if isinstance(self.plans[r]["when"],int) and layer<self.plans[r]["when"]:
             return cluttered
         out = torch.where(source==0,clean,cluttered)
         if (source==2).any():
-            generator = torch.Generator(device=clean.device).manual_seed(self.seed*1000+layer)
+            # the salt gives gemma's extra layer input its own random direction
+            generator = torch.Generator(device=clean.device).manual_seed(self.seed*1000+layer+salt)
             direction = torch.randn(clean.shape,generator=generator,device=clean.device,dtype=torch.float32)
             direction = direction/direction.norm(dim=-1,keepdim=True)
             size = (clean.float()-cluttered.float()).norm(dim=-1,keepdim=True)
@@ -127,15 +144,37 @@ class Surgery:
             cluttered = hidden[1,positions]
             for r in rows:
                 hidden[r,positions] = self.mix(r,clean,cluttered,layer)
-            return with_hidden(args,kwargs,hidden)
+            args,kwargs = with_hidden(args,kwargs,hidden)
+            if self.family=="gemma":
+                args,kwargs = self.mix_side_input(args,kwargs,rows,layer)
+            return args,kwargs
         return hook
+
+    def mix_side_input(self,args,kwargs,rows,layer):
+        """Give gemma's extra per layer input of the mixed rows the same clean and cluttered parts as their notes"""
+        # gemma also feeds every layer a small input made from each token's starting notes
+        # left alone it would carry the cluttered picture back in past the swap
+        side = args[1] if len(args)>1 else kwargs.get("per_layer_input")
+        if side is None:
+            return args,kwargs
+        positions = self.positions.to(side.device)
+        side = side.clone()
+        clean = side[0,positions]
+        cluttered = side[1,positions]
+        for r in rows:
+            side[r,positions] = self.mix(r,clean,cluttered,layer,salt=500)
+        if len(args)>1:
+            return (args[0],side,*args[2:]),kwargs
+        return args,dict(kwargs,per_layer_input=side)
 
     def at_handover(self,module,args,output):
         """Replace the merger output and the deepstack features of the hand over rows"""
         rows = self.rows_for("hand")
         if not rows:
             return output
-        for features in [output.pooler_output,*output.deepstack_features]:
+        # gemma hands over only the projected squares and its extra layer inputs are then built from them
+        features_list = [output] if self.family=="gemma" else [output.pooler_output,*output.deepstack_features]
+        for features in features_list:
             view = features.view(len(self.plans),config.TOKENS,-1)
             clean = view[0].clone()
             cluttered = view[1].clone()
@@ -145,7 +184,8 @@ class Surgery:
 
     def __enter__(self):
         visual,language = parts_of(self.model)
-        self.handles.append(visual.register_forward_hook(self.at_handover))
+        handover = self.model.model.embed_vision if self.family=="gemma" else visual
+        self.handles.append(handover.register_forward_hook(self.at_handover))
         for i,layer in enumerate(language.layers):
             self.handles.append(layer.register_forward_pre_hook(self.before_layer(i),with_kwargs=True))
         return self

@@ -340,3 +340,43 @@ pip install -e .
 python -X utf8 -m pytest -p no:warnings        # CPU tests
 python -m tangle.main                          # checks the local data against the pinned hashes
 ```
+
+### Gemma 4 E4B replication (this fork)
+
+The same study on `google/gemma-4-E4B-it` (`gemma4e4b`, the weights Gemma used in Study 3), Objects only, with the
+main swap rows (A, B, C, D, B_obj, B_bg), like the Qwen3-VL-8B replication. Every Qwen step is unchanged.
+
+Gemma reads pictures differently from Qwen, so the Gemma code makes three choices:
+
+| where | Qwen | Gemma |
+|---|---|---|
+| picture size | reads the 512 px png as it is | reads 768 px. We enlarge the png ourselves by repeating pixels (exactly 1.5x), so every 32 px square becomes one 48 px block and no pixel spills into the next square. Gemma's own enlarging would blur across squares and make untouched squares look touched |
+| squares and patches | 2x2 patches of 16 px per square | 3x3 patches of 16 px (of the 768 px picture) per square, listed row by row. Both give the same 16x16 grid of 256 squares |
+| hand over | merger output plus three DeepStack sets | only the projected squares (`embed_vision`), which are also the notes entering llm layer 0. The `leak_deep` arrays are empty |
+| swap | notes of the picture tokens at every layer | the same, plus Gemma's extra per layer input (`per_layer_input`). Gemma builds it from each token's starting notes, so left alone it would carry the cluttered picture back in past the swap |
+
+`tests/test_gemma.py` checks all of this on CPU with Gemma's real image processor and a tiny random Gemma 4: the
+enlarged picture reaches the model unchanged, one changed pixel changes only its own patches, the masks match the
+processed pixels, untouched patch embeddings are identical, and every swap row (notes and per layer input) takes
+clean or cluttered values exactly where its plan says, with A equal to plain cluttered and D equal to plain clean.
+The prompt, the chat template's end token and the real weights are checked by the Kaggle probe run.
+
+Kaggle notebook: GPU T4 x2, internet on, secret `HF_TOKEN` (a read token that can see the `atml-shapes-vqa`
+datasets; no GitHub token is needed). One cell, with `COMMIT` replaced by the commit to run:
+
+```
+!git clone -q https://github.com/zoyakhan51/seeing-through-the-clutter /tmp/launcher && git -C /tmp/launcher checkout -q COMMIT
+import os
+os.environ["TANGLE_MODE"] = "probegemma"
+os.environ["TANGLE_COMMIT"] = "COMMIT"
+os.environ["TANGLE_REPO"] = "https://github.com/zoyakhan51/seeing-through-the-clutter.git"
+!python /tmp/launcher/kaggle/kernel/run.py
+```
+
+1. `probegemma`: 2 scenes of both steps (about 20 minutes). Checks that everything loads and runs.
+2. `smokegemma`: 10 scenes of both steps. Run `python -m tangle.analysis.checks <results>` on its output: A must
+   equal plain cluttered, D plain clean, every answer must parse, and the plain accuracies must be close to Gemma's
+   Study 3 scores (they can differ a little because Gemma now sees the sharp enlarged picture).
+3. `fullgemma`: all 500 scenes. Expected to pass Kaggle's 12 hour limit: the run stops cleanly between chunks after
+   11 hours. Attach that run's output to a new version and set `os.environ["TANGLE_RESUME"]` to its `results` folder
+   (under `/kaggle/input/...`) to continue where it stopped.

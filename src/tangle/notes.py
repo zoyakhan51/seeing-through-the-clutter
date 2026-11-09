@@ -32,7 +32,8 @@ if __name__=="__main__":
     args = work.worker_args("record the notes of every scene for the leak and read back tests")
     model,processor = qwen.load(args.model)
     chunks,total = work.my_chunks(args.dataset,args.worker,args.workers)
-    depth = model.config.vision_config.depth
+    family = qwen.family_of(model)
+    depth = qwen.vision_depth(model)
     vision_layers = [round(i*depth/4) for i in range(5)]
     llm_layers = [0]+[k for k in config.LLM_NOTE_LAYERS if k<=model.config.text_config.num_hidden_layers]
     started = time.time()
@@ -59,21 +60,21 @@ if __name__=="__main__":
             # one picture per pass because the place of a picture inside a batch changes the rounding of the vision part
             for picture in batch:
                 inputs = qwen.batch_inputs(model,processor,prompt,[picture])
-                assert inputs["image_grid_thw"].tolist()==[[1,2*config.GRID,2*config.GRID]],"the processor resized the picture"
+                qwen.check_picture(model,inputs)
                 positions = qwen.image_positions(model,inputs["input_ids"])
                 with hooks.Recorder(model,positions,1) as rec,torch.no_grad():
                     model.model(**inputs)
                 recs.append(rec)
-                pixels.append(inputs["pixel_values"])
+                pixels.append(qwen.pixel_patches(model,inputs))
             vision = [torch.cat([rec.vision[k] for rec in recs]) for k in range(len(recs[0].vision))]
             llm = [torch.cat([rec.llm[k] for rec in recs]) for k in range(len(recs[0].llm))]
             deep = [torch.cat([rec.deepstack[k] for rec in recs]) for k in range(len(recs[0].deepstack))]
             assert len(llm)==model.config.text_config.num_hidden_layers+1,"missed a residual point"
             dup_diff.append(max(float((p[1].float()-p[0].float()).abs().max()) for p in vision+llm+deep))
-            pixels = torch.stack(pixels).reshape(len(batch),config.PATCHES,-1)
+            pixels = torch.cat(pixels)
             for i,row in enumerate(rows[1:]):
                 r = i+2
-                m = data.masks(pictures[0],pictures[i+1],data.objects_of(row))
+                m = data.masks(pictures[0],pictures[i+1],data.objects_of(row),family)
                 same_pixels = (pixels[r]==pixels[0]).all(-1).cpu().numpy()
                 record = {
                     "untouched":m["untouched"],"object":m["object"],"background":m["background"],"clutter":m["clutter"],
@@ -82,8 +83,9 @@ if __name__=="__main__":
                     "rel_vision":torch.stack([relative(p[r],p[0]) for p in vision]).half().cpu().numpy(),
                     "leak_llm":torch.stack([leak(p[r],p[0]) for p in llm]).cpu().numpy(),
                     "rel_llm":torch.stack([relative(p[r],p[0]) for p in llm]).half().cpu().numpy(),
-                    "leak_deep":torch.stack([leak(p[r],p[0]) for p in deep]).cpu().numpy(),
-                    "rel_deep":torch.stack([relative(p[r],p[0]) for p in deep]).half().cpu().numpy(),
+                    # gemma has no deepstack so its deepstack arrays are empty
+                    "leak_deep":torch.stack([leak(p[r],p[0]) for p in deep]).cpu().numpy() if deep else np.zeros((0,config.TOKENS),np.float32),
+                    "rel_deep":torch.stack([relative(p[r],p[0]) for p in deep]).half().cpu().numpy() if deep else np.zeros((0,config.TOKENS),np.float16),
                     # both must be zero when the squares line up with the pixels
                     "pixel_mismatch":np.int64((same_pixels!=m["untouched_patch"]).sum()),
                     "embed_diff":np.int64(((vision[0][r]!=vision[0][0]).any(-1).cpu().numpy()&m["untouched_patch"]).sum()),

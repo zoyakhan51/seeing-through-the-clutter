@@ -13,18 +13,26 @@ from kaggle_secrets import UserSecretsClient
 MODE = "full8b"
 COMMIT = "d7ce899e52b88033d8ab18eaa2ee74c9a7123630"
 REPO = "https://github.com/Mohidali2005/seeing-through-the-clutter.git"
+# a notebook can set the mode commit and repo through these variables instead of editing this file
+MODE = os.environ.get("TANGLE_MODE",MODE)
+COMMIT = os.environ.get("TANGLE_COMMIT",COMMIT)
+REPO = os.environ.get("TANGLE_REPO",REPO)
 INSTALL = ["transformers==5.22.1"]
 CODE = Path("/tmp/code")
 RESULTS = Path("/kaggle/working/results")
 MODELS = Path("/tmp/tangle_models")
 DATA = Path("/tmp/tangle_data")
 # a results folder of an earlier run attached as a dataset makes this run continue from it
-RESUME = Path("/kaggle/input/tangle-partial/results")
+RESUME = Path(os.environ.get("TANGLE_RESUME","/kaggle/input/tangle-partial/results"))
 MODES = {
     "probe":{"scenes":"2","chunk":"1","args":["--models","qwen4b","--steps","notes:objects","swap:objects"]},
     "smoke":{"scenes":"10","chunk":"5","args":["--models","qwen4b","qwen8b"]},
     "full4b":{"scenes":"0","chunk":"20","args":["--models","qwen4b"]},
     "full8b":{"scenes":"0","chunk":"20","args":["--models","qwen8b"]},
+    # gemma tries two scenes first then ten scenes of every gemma step and then the whole gemma study
+    "probegemma":{"scenes":"2","chunk":"1","args":["--models","gemma4e4b"]},
+    "smokegemma":{"scenes":"10","chunk":"5","args":["--models","gemma4e4b"]},
+    "fullgemma":{"scenes":"0","chunk":"20","args":["--models","gemma4e4b"]},
 }
 
 
@@ -35,11 +43,17 @@ def shell(command):
 
 secrets = UserSecretsClient()
 hf_token = secrets.get_secret("HF_TOKEN")
-github_token = secrets.get_secret("GITHUB_TOKEN")
+# a public repo needs no github token so a notebook without that secret clones it without one
+try:
+    github_token = secrets.get_secret("GITHUB_TOKEN")
+except Exception:
+    github_token = None
 
-# passing the github token through git config variables so it never shows up in a command line or a file
-auth = base64.b64encode(f"x-access-token:{github_token}".encode()).decode()
-git_env = dict(os.environ,GIT_CONFIG_COUNT="1",GIT_CONFIG_KEY_0="http.extraHeader",GIT_CONFIG_VALUE_0=f"Authorization: Basic {auth}")
+git_env = dict(os.environ)
+if github_token:
+    # passing the github token through git config variables so it never shows up in a command line or a file
+    auth = base64.b64encode(f"x-access-token:{github_token}".encode()).decode()
+    git_env = dict(os.environ,GIT_CONFIG_COUNT="1",GIT_CONFIG_KEY_0="http.extraHeader",GIT_CONFIG_VALUE_0=f"Authorization: Basic {auth}")
 subprocess.run(["git","clone","--quiet",REPO,str(CODE)],env=git_env,check=True)
 subprocess.run(["git","-C",str(CODE),"checkout","--quiet","--detach",COMMIT],check=True)
 head = subprocess.run(["git","-C",str(CODE),"rev-parse","HEAD"],capture_output=True,text=True,check=True).stdout.strip()

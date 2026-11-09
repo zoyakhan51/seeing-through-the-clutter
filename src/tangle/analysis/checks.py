@@ -12,6 +12,11 @@ STUDY3 = {
     "shapes":{"clean":45.0,"squiggles":28.8,"lookalikes":3.4,"blobs":2.8},
     "hard":{"clean":42.2,"squiggles_2":36.4,"squiggles_4":31.6,"squiggles_16":30.4,"text_traps":28.0,"squiggles_8":26.0,"other_shapes":17.4,"wrong_color":8.4,"lookalikes":3.2,"everything":0.4},
 }
+# the same for the other models of study 3 on the datasets they run here
+STUDY3_OTHER = {
+    "qwen8b":{"objects":{"clean":98.2,"random_objects":92.8,"text_traps":79.8,"lookalikes":35.4,"everything":22.8}},
+    "gemma4e4b":{"objects":{"clean":87.6,"random_objects":80.2,"text_traps":43.0,"lookalikes":58.8,"everything":15.8}},
+}
 
 parser = argparse.ArgumentParser(description="health report of one downloaded kaggle run")
 parser.add_argument("results",type=Path,help="the results folder of a downloaded run")
@@ -49,7 +54,7 @@ for folder in sorted((args.results/"swap").glob("*/*")):
               f"- greedy path equals gold agrees with the scorer (plain rows): {(plain['greedy_gold']==plain['exact_match']).mean():.2%}",
               "","| version | images | our accuracy % | study 3 % |","|---|---|---|---|"]
     clean = table[table["condition"]=="clean"].drop_duplicates("scene_id")
-    study = STUDY3[folder.name]
+    study = STUDY3_OTHER.get(folder.parent.name,STUDY3)[folder.name]
     lines.append(f"| clean | {len(clean)} | {100*clean['exact_match'].mean():.1f} | {study['clean']} |")
     cluttered = table[table["condition"]=="cluttered"]
     for version,group in cluttered.groupby("version",sort=False):
