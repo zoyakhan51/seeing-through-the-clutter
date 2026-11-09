@@ -44,6 +44,9 @@ def batch_inputs(model,processor,prompt,images):
     family = family_of(model)
     # gemma gets the picture already enlarged to 768 px so its processor does not blur pixels across squares
     pictures = [Image.fromarray(data.enlarge(image,family)) for image in images]
+    if family=="gemma":
+        # gemma's processor wants the pictures of each row in their own list
+        pictures = [[picture] for picture in pictures]
     inputs = processor(text=[prompt]*len(pictures),images=pictures,return_tensors="pt",add_special_tokens=False)
     return inputs.to(model.device)
 
